@@ -410,6 +410,8 @@ pub struct TextViewPrepaintState {
     /// straddles the bottom of the box. `None` leaves the clip at the box edge,
     /// where the container's hidden overflow already applies it.
     clip_bottom: Option<Pixels>,
+    /// The touch handles this view owns, with their hitboxes.
+    touch_handles: crate::TouchHandleLayout,
 }
 
 /// Absorbs sub-pixel layout jitter: a line ending within a pixel of the box
@@ -671,9 +673,20 @@ impl Element for TextView {
             }
         }
 
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        // Over the text, so after its hitbox.
+        let touch_handles = if self.selectable {
+            state
+                .read(cx)
+                .selection_adapter
+                .prepaint_touch_handles(window, cx)
+        } else {
+            crate::TouchHandleLayout::default()
+        };
         TextViewPrepaintState {
-            hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            hitbox,
             clip_bottom,
+            touch_handles,
         }
     }
 
@@ -710,13 +723,14 @@ impl Element for TextView {
         GlobalState::global_mut(cx).text_view_state_stack.pop();
 
         if self.selectable {
-            let (adapter, scroll_offset, content_bounds, self_scroll) = {
+            let (adapter, scroll_offset, content_bounds, self_scroll, handle_color) = {
                 let state = state.read(cx);
                 (
                     state.selection_adapter.clone(),
                     state.scroll_offset(),
                     state.bounds(),
                     state.scrollable,
+                    state.text_view_style.selection().alpha(1.),
                 )
             };
             let document_order = GlobalState::global_mut(cx).next_selection_document_order();
@@ -729,6 +743,9 @@ impl Element for TextView {
                 window,
                 cx,
             );
+            // The handles of a touch selection go over the text, and under
+            // whatever is painted over the text after it.
+            adapter.paint_touch_handles(&prepaint.touch_handles, handle_color, window, cx);
         }
     }
 }
@@ -2614,6 +2631,135 @@ mod tests {
             view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text())
                 .trim(),
             "quick select value"
+        );
+    }
+
+    #[gpui::test]
+    fn long_press_release_keeps_handles_which_drag_the_selection(cx: &mut TestAppContext) {
+        use crate::{SelectionEdge, TextSelection};
+
+        struct TouchRoot {
+            text_view: Entity<TextViewState>,
+        }
+        impl Render for TouchRoot {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .w(px(300.))
+                    .child(crate::TextSelectionLayer)
+                    .child(TextView::new(&self.text_view).selectable(true))
+            }
+        }
+        cx.update(crate::init);
+        let (view, cx) = cx.add_window_view(|_, cx| TouchRoot {
+            text_view: cx.new(|cx| TextViewState::markdown("quick select value", cx)),
+        });
+        let draw = |cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                let _ = window.draw(cx);
+            });
+        };
+        let selected = |cx: &mut VisualTestContext| {
+            view.read_with(cx, |root, cx| root.text_view.read(cx).selected_text())
+                .trim()
+                .to_string()
+        };
+        cx.run_until_parked();
+        draw(cx);
+
+        let start_position = point(px(70.), px(16.));
+        for phase in [gpui::TouchPhase::Started, gpui::TouchPhase::Ended] {
+            cx.simulate_event(gpui::LongPressEvent {
+                phase,
+                start_position,
+                position: start_position,
+            });
+            draw(cx);
+        }
+        assert_eq!(selected(cx), "select");
+        let snapshot = cx
+            .update(|window, cx| TextSelection::touch_selection(window, cx))
+            .expect("a released long press keeps its handles");
+        assert!(snapshot.is_menu_open());
+        assert!(!snapshot.is_empty());
+        assert!(snapshot.start().left() < snapshot.end().left());
+
+        // Drag the end handle to the end of the line. The finger holds the
+        // knob below the line, the selection follows along the line.
+        let end = snapshot.end();
+        let finger = point(end.left(), end.bottom() + px(20.));
+        cx.update(|window, cx| {
+            TextSelection::begin_edge_drag(SelectionEdge::End, finger, window, cx);
+        });
+        draw(cx);
+        let snapshot = cx
+            .update(|window, cx| TextSelection::touch_selection(window, cx))
+            .unwrap();
+        assert_eq!(snapshot.dragging(), Some(SelectionEdge::End));
+        assert!(!snapshot.is_menu_open());
+        cx.update(|window, cx| {
+            TextSelection::update_edge_drag(point(px(290.), finger.y), window, cx);
+        });
+        draw(cx);
+        assert_eq!(selected(cx), "select value");
+        cx.update(|window, cx| TextSelection::end_edge_drag(window, cx));
+        draw(cx);
+        let snapshot = cx
+            .update(|window, cx| TextSelection::touch_selection(window, cx))
+            .unwrap();
+        assert!(snapshot.is_menu_open());
+        assert_eq!(snapshot.dragging(), None);
+        let select_start = snapshot.start().left();
+
+        // Select All from the menu is a view-local selection; its handles
+        // still drag, turning it back into a point selection.
+        cx.update(|_, cx| {
+            view.update(cx, |root, cx| {
+                root.text_view.update(cx, |state, cx| state.select_all(cx));
+            });
+        });
+        draw(cx);
+        assert_eq!(selected(cx), "quick select value");
+        let snapshot = cx
+            .update(|window, cx| TextSelection::touch_selection(window, cx))
+            .expect("select all keeps the touch selection");
+        let start = snapshot.start();
+        cx.update(|window, cx| {
+            TextSelection::begin_edge_drag(SelectionEdge::Start, start.origin, window, cx);
+            TextSelection::update_edge_drag(point(select_start, start.origin.y), window, cx);
+            TextSelection::end_edge_drag(window, cx);
+        });
+        draw(cx);
+        assert_eq!(selected(cx), "select value");
+
+        // A press on the menu leaves the selection alone; one on the text
+        // clears it.
+        let menu = gpui::Bounds::new(point(px(0.), px(200.)), gpui::size(px(120.), px(32.)));
+        cx.update(|window, cx| TextSelection::register_touch_ui(menu, window, cx));
+        cx.simulate_event(MouseDownEvent {
+            position: point(px(10.), px(210.)),
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        assert_eq!(selected(cx), "select value");
+        cx.simulate_event(MouseDownEvent {
+            position: point(px(10.), px(16.)),
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+            first_mouse: false,
+        });
+        cx.simulate_event(MouseUpEvent {
+            position: point(px(10.), px(16.)),
+            modifiers: Modifiers::default(),
+            button: MouseButton::Left,
+            click_count: 1,
+        });
+        draw(cx);
+        assert!(
+            cx.update(|window, cx| TextSelection::touch_selection(window, cx))
+                .is_none()
         );
     }
 
