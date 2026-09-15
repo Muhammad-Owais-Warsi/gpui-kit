@@ -230,6 +230,42 @@ Input::new(&input).context_menu(|menu, window, cx| {
 })
 ```
 
+### Paste Hook
+
+`on_paste` intercepts the clipboard before the default text insertion, so
+pasted images and copied files can live in app-owned state instead of being
+silently dropped. It is available on `Input`, `Textarea` and `Editor`.
+
+```rust
+use gpui::ClipboardEntry;
+
+let view = cx.entity().downgrade();
+Textarea::new(&self.composer).on_paste(move |item, _, cx| {
+    let images: Vec<_> = item.entries().iter().filter_map(|entry| match entry {
+        ClipboardEntry::Image(image) => Some(image.clone()),
+        _ => None,
+    }).collect();
+    if images.is_empty() {
+        return false; // fall through to the default text insertion
+    }
+    view.update(cx, |this, cx| {
+        // Store the images beside the input, e.g. as `Attachment`s.
+        this.attachments.extend(images);
+        cx.notify();
+    }).ok();
+    true // consumed, the input inserts nothing
+})
+```
+
+Return `true` when the handler took the paste: the `input::Paste` action
+stops there and the input inserts nothing. Return `false` to let the action
+reach the engine, which inserts `clipboard.text()` as before. Copied files
+arrive as `ClipboardEntry::ExternalPaths` through the same hook.
+
+Known limit: on web `read_from_clipboard()` is `None` (text arrives through
+the platform input handler); image paste there needs async clipboard access
+and permission, and is out of scope.
+
 ## Examples
 
 ### Search Input

@@ -197,6 +197,35 @@ div()
     .child(Input::new(&input).appearance(false))
 ```
 
+### 粘贴钩子
+
+`on_paste` 会在默认文本插入之前拦截剪贴板内容，因此粘贴的图片和复制的文件可以保存在应用状态中，而不会被静默丢弃。`Input`、`Textarea` 和 `Editor` 均可使用。
+
+```rust
+use gpui::ClipboardEntry;
+
+let view = cx.entity().downgrade();
+Textarea::new(&self.composer).on_paste(move |item, _, cx| {
+    let images: Vec<_> = item.entries().iter().filter_map(|entry| match entry {
+        ClipboardEntry::Image(image) => Some(image.clone()),
+        _ => None,
+    }).collect();
+    if images.is_empty() {
+        return false; // 回退到默认的文本插入
+    }
+    view.update(cx, |this, cx| {
+        // 将图片保存在输入框之外的应用状态中，例如 `Attachment`。
+        this.attachments.extend(images);
+        cx.notify();
+    }).ok();
+    true // 已处理，输入框不再插入任何内容
+})
+```
+
+当 handler 接管了粘贴时返回 `true`：`input::Paste` action 就此停止，输入框不插入任何内容。返回 `false` 则放行，engine 会像往常一样插入 `clipboard.text()`。复制的文件以 `ClipboardEntry::ExternalPaths` 的形式走同一个钩子。
+
+已知限制：在 web 上 `read_from_clipboard()` 为 `None`（文本经由平台输入处理器到达）；那里的图片粘贴需要异步剪贴板访问和权限，不在本次范围内。
+
 ## 示例
 
 ### 搜索输入框

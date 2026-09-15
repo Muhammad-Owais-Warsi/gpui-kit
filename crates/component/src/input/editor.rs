@@ -110,6 +110,12 @@ impl Editor {
         self
     }
 
+    /// Intercept paste payloads (images, files) before the default text insertion.
+    ///
+    /// `true` consumes the paste so nothing is inserted, `false` falls through
+    /// to `clipboard.text()`. Copied files arrive as `ExternalPaths` through
+    /// the same hook. On web the clipboard reads `None`; image paste needs
+    /// async clipboard access and is out of scope.
     pub fn on_paste(
         mut self,
         handler: impl Fn(&gpui::ClipboardItem, &mut Window, &mut App) -> bool + 'static,
@@ -389,6 +395,27 @@ mod tests {
                 state.replace_text_in_range(None, "!", window, cx);
                 assert_eq!(state.text().to_string(), "/*x*/!");
             });
+        });
+    }
+
+    #[gpui::test]
+    fn test_on_paste_builder(cx: &mut TestAppContext) {
+        use gpui::{AppContext as _, Render};
+
+        struct PasteProbe;
+        impl Render for PasteProbe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+            }
+        }
+
+        cx.update(crate::init);
+        let _ = cx.add_window_view(|window, cx| {
+            let state = cx.new(|cx| EditorState::new(window, cx));
+            assert!(Editor::new(&state).paste_handler.is_none());
+            let editor = Editor::new(&state).on_paste(|_, _, _| true);
+            assert!(editor.paste_handler.is_some());
+            PasteProbe
         });
     }
 }

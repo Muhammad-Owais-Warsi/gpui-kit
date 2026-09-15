@@ -422,7 +422,6 @@ pub struct InputBaseState<M: InputModeKind> {
     context_menu_handler: Option<
         Rc<dyn Fn(NativeMenu, InputContextMenuCapabilities, Point<Pixels>, &mut Window, &mut App)>,
     >,
-    paste_handler: Option<Rc<dyn Fn(&ClipboardItem, &mut Window, &mut App) -> bool>>,
     pending_context_menu: Option<(Point<Pixels>, usize)>,
 
     /// Whether the context menu that shows on right-click is enabled.
@@ -639,10 +638,6 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.context_menu_handler = Some(handler);
     }
 
-    pub fn on_paste(&mut self, handler: Rc<dyn Fn(&ClipboardItem, &mut Window, &mut App) -> bool>) {
-        self.paste_handler = Some(handler);
-    }
-
     /// Build the engine. Each mode's own `new` sets its layout on top of this.
     fn new_in_mode(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle().tab_stop(true);
@@ -731,7 +726,6 @@ impl<M: InputModeKind> InputBaseState<M> {
             projected_editor_style: InputEditorStyle::default(),
             diagnostic_popover: None,
             context_menu_handler: None,
-            paste_handler: None,
             pending_context_menu: None,
             enable_context_menu: true,
             completion_inserting: false,
@@ -2577,11 +2571,6 @@ impl<M: InputModeKind> InputBaseState<M> {
         let Some(clipboard) = cx.read_from_clipboard() else {
             return;
         };
-        if let Some(handler) = self.paste_handler.clone() {
-            if handler(&clipboard, window, cx) {
-                return;
-            }
-        }
         let mut new_text = clipboard.text().unwrap_or_default();
         // A paste is one atomic edit, never part of a typing run.
         self.undo_manager.set_pending_intent(EditIntent::Atomic);

@@ -106,6 +106,12 @@ impl Textarea {
         self
     }
 
+    /// Intercept paste payloads (images, files) before the default text insertion.
+    ///
+    /// `true` consumes the paste so nothing is inserted, `false` falls through
+    /// to `clipboard.text()`. Copied files arrive as `ExternalPaths` through
+    /// the same hook. On web the clipboard reads `None`; image paste needs
+    /// async clipboard access and is out of scope.
     pub fn on_paste(
         mut self,
         handler: impl Fn(&gpui::ClipboardItem, &mut Window, &mut App) -> bool + 'static,
@@ -139,5 +145,35 @@ impl RenderOnce for Textarea {
                 this.on_paste(move |item, window, cx| handler(item, window, cx))
             })
             .refine_style(&self.style)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gpui::test]
+    fn test_on_paste_builder(cx: &mut gpui::TestAppContext) {
+        use gpui::{AppContext as _, Render};
+
+        struct Probe;
+        impl Render for Probe {
+            fn render(
+                &mut self,
+                _: &mut Window,
+                _: &mut gpui::Context<Self>,
+            ) -> impl gpui::IntoElement {
+                gpui::div()
+            }
+        }
+
+        cx.update(crate::init);
+        let _ = cx.add_window_view(|window, cx| {
+            let state = cx.new(|cx| TextareaState::new(window, cx));
+            assert!(Textarea::new(&state).paste_handler.is_none());
+            let textarea = Textarea::new(&state).on_paste(|_, _, _| true);
+            assert!(textarea.paste_handler.is_some());
+            Probe
+        });
     }
 }
