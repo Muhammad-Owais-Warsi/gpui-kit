@@ -31,6 +31,8 @@ pub struct Editor {
     ///
     /// If set, this overrides the built-in context menu.
     context_menu_builder: Option<Rc<dyn Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu>>,
+
+    paste_handler: Option<Rc<dyn Fn(&gpui::ClipboardItem, &mut Window, &mut App) -> bool>>,
 }
 
 impl Editor {
@@ -47,6 +49,7 @@ impl Editor {
             role: RoleOverride::default(),
             aria_label: None,
             context_menu_builder: None,
+            paste_handler: None,
         }
     }
 
@@ -106,6 +109,14 @@ impl Editor {
         self.context_menu_builder = Some(Rc::new(f));
         self
     }
+
+    pub fn on_paste(
+        mut self,
+        handler: impl Fn(&gpui::ClipboardItem, &mut Window, &mut App) -> bool + 'static,
+    ) -> Self {
+        self.paste_handler = Some(Rc::new(handler));
+        self
+    }
 }
 
 impl Styled for Editor {
@@ -135,6 +146,9 @@ impl RenderOnce for Editor {
             .when_some(self.aria_label, |this, label| this.aria_label(label))
             .when_some(self.context_menu_builder, |this, build| {
                 this.context_menu(move |menu, window, cx| build(menu, window, cx))
+            })
+            .when_some(self.paste_handler, |this, handler| {
+                this.on_paste(move |item, window, cx| handler(item, window, cx))
             })
             .refine_style(&self.style)
     }

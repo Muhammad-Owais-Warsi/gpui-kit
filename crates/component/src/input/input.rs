@@ -132,6 +132,10 @@ pub struct Input {
     ///
     /// If set, this overrides the built-in context menu.
     context_menu_builder: Option<Rc<dyn Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu>>,
+
+    /// An optional paste handler. If set, it is invoked with the clipboard item
+    /// before the default text insertion. Return `true` if handled.
+    paste_handler: Option<Rc<dyn Fn(&gpui::ClipboardItem, &mut Window, &mut App) -> bool>>,
 }
 
 impl Sizable for Input {
@@ -206,6 +210,7 @@ impl Input {
             accessibility_id: None,
             aria_label: None,
             context_menu_builder: None,
+            paste_handler: None,
         }
     }
 
@@ -319,6 +324,19 @@ impl Input {
         f: impl Fn(NativeMenu, &mut Window, &mut App) -> NativeMenu + 'static,
     ) -> Self {
         self.context_menu_builder = Some(Rc::new(f));
+        self
+    }
+
+    /// Set a paste handler invoked with the clipboard item before default text insertion.
+    ///
+    /// Return `true` if the paste was handled (e.g. image entries consumed), in which
+    /// case the input performs no further insertion. Return `false` to fall through
+    /// to the default `clipboard.text()` insertion.
+    pub fn on_paste(
+        mut self,
+        handler: impl Fn(&gpui::ClipboardItem, &mut Window, &mut App) -> bool + 'static,
+    ) -> Self {
+        self.paste_handler = Some(Rc::new(handler));
         self
     }
 
@@ -482,6 +500,9 @@ impl RenderOnce for Input {
             }),
             cx,
         );
+        if let Some(handler) = self.paste_handler.clone() {
+            state.on_paste(handler, cx);
+        }
         let overlays = state.render_overlays(window, cx);
 
         let presentation = state.presentation(cx);

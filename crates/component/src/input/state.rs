@@ -133,6 +133,15 @@ impl TextInputState {
             .update(cx, |state, _| state.on_context_menu(handler)))
     }
 
+    pub(crate) fn on_paste(
+        &self,
+        handler: std::rc::Rc<dyn Fn(&gpui::ClipboardItem, &mut Window, &mut App) -> bool>,
+        cx: &mut App,
+    ) {
+        dispatch!(self, |state| state
+            .update(cx, |state, _| state.on_paste(handler)))
+    }
+
     /// Builds and syncs this input's overlays. See [`super::overlay`].
     pub(super) fn render_overlays(
         &self,
