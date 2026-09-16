@@ -94,7 +94,7 @@ impl SettingFieldRender for NumberField {
                                     return;
                                 }
 
-                                // Forward only: unparseable intermediates
+                                // Forward only: unparsable intermediates
                                 // ("-", "", "1.") are left alone so the
                                 // next keystroke can complete them.
                                 if let Ok(parsed) = text.parse::<f64>() {
