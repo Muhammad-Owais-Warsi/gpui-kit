@@ -94,12 +94,15 @@ impl SettingFieldRender for NumberField {
                                     return;
                                 }
 
-                                // Forward only: unparsable intermediates
-                                // ("-", "", "1.") are left alone so the
-                                // next keystroke can complete them.
+                                // Unparsable intermediates ("-", "", "1.") are
+                                // left alone so the next keystroke can complete
+                                // them. Out-of-range text stays too (the engine
+                                // clamps it on blur), but the setting only ever
+                                // receives a value inside `min..=max`.
                                 if let Ok(parsed) = text.parse::<f64>() {
-                                    set_value(parsed, cx);
-                                    state.initial_value = parsed;
+                                    let clamped = parsed.clamp(num_options.min, num_options.max);
+                                    set_value(clamped, cx);
+                                    state.initial_value = clamped;
                                 }
                             });
                         }
