@@ -36,6 +36,9 @@ pub struct TextareaStory {
     chat_messages: Vec<String>,
     composer: Entity<TextareaState>,
     attachments: Vec<ComposerAttachment>,
+    /// Counter for attachment ids; `Image::id` is a content hash, so pasting
+    /// the same image twice would collide.
+    next_attachment_id: u64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -164,6 +167,7 @@ impl TextareaStory {
             chat_messages: Vec::new(),
             composer,
             attachments: Vec::new(),
+            next_attachment_id: 0,
             _subscriptions,
         }
     }
@@ -339,17 +343,19 @@ impl Render for TextareaStory {
                                         return false;
                                     }
                                     view.update(cx, |this: &mut Self, cx| {
-                                        this.attachments.extend(images.into_iter().map(|image| {
-                                            ComposerAttachment {
-                                                id: image.id,
-                                                title: format!("pasted-image-{}.png", image.id),
+                                        for image in images {
+                                            let id = this.next_attachment_id;
+                                            this.next_attachment_id += 1;
+                                            this.attachments.push(ComposerAttachment {
+                                                id,
+                                                title: format!("pasted-image-{id}.png"),
                                                 detail: format!(
                                                     "{:?} - {} bytes",
                                                     image.format,
                                                     image.bytes.len()
                                                 ),
-                                            }
-                                        }));
+                                            });
+                                        }
                                         cx.notify();
                                     })
                                     .ok();

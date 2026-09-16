@@ -584,7 +584,12 @@ impl RenderOnce for Input {
             }),
             cx,
         );
-        let paste_handler = self.paste_handler.clone();
+        // The engine ignores `Paste` on a read-only or disabled input; the hook
+        // must not see a paste the input itself would refuse.
+        let paste_handler = self
+            .paste_handler
+            .clone()
+            .filter(|_| state.presentation(cx).is_editable());
         let mut overlays = state.render_overlays(window, cx);
         overlays
             .floating
