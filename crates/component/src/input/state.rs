@@ -56,11 +56,17 @@ impl TextInputState {
         &self,
         renderer: Option<gpui_base::input::InlineTokenRenderer>,
         listener: Option<gpui_base::input::InlineTokenClickListener>,
+        hover_listener: Option<gpui_base::input::InlineTokenHoverListener>,
         secret: bool,
         cx: &mut App,
     ) {
         dispatch!(self, |state| state.update(cx, |state, _| state
-            .install_token_presentation(renderer, listener, secret)))
+            .install_token_presentation(
+                renderer,
+                listener,
+                hover_listener,
+                secret
+            )))
     }
 
     pub(crate) fn entity_id(&self) -> gpui::EntityId {

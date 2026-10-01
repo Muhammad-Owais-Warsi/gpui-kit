@@ -1444,7 +1444,9 @@ impl<M: InputModeKind> TextElement<M> {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        use gpui::{StatefulInteractiveElement as _, prelude::FluentBuilder as _};
+        use gpui::{
+            InteractiveElement as _, StatefulInteractiveElement as _, prelude::FluentBuilder as _,
+        };
         let presentation = self.state.read(cx).token_presentation.clone();
         let child = presentation.render(token, window, cx);
         // A token is addressed by where it starts: the same reference may occur
@@ -1454,6 +1456,7 @@ impl<M: InputModeKind> TextElement<M> {
         let down_state = self.state.clone();
         let click_state = self.state.clone();
         let move_state = self.state.clone();
+        let hover_state = self.state.clone();
         let disabled = token.is_disabled();
         let accessible = presentation.has_listener() && !disabled;
         let accessible_state = self.state.clone();
@@ -1562,6 +1565,23 @@ impl<M: InputModeKind> TextElement<M> {
                     state.set_selected_range(span.range(), cx);
                     let bounds = state.range_to_bounds(&span.range())?;
                     state.token_activation(start, bounds, event.clone())
+                });
+                if let Some((listener, event)) = activation {
+                    listener(&event, window, cx);
+                }
+            })
+            .on_hover(move |hovered, window, cx| {
+                // Hover never selects or edits; it only reports presence so the
+                // application can show a tooltip or run custom logic.
+                let hovered = *hovered;
+                let activation = hover_state.update(cx, |state, _| {
+                    let span = state
+                        .token_spans()
+                        .iter()
+                        .find(|s| s.range().start == start)?
+                        .clone();
+                    let bounds = state.range_to_bounds(&span.range())?;
+                    state.token_hover(start, bounds, hovered)
                 });
                 if let Some((listener, event)) = activation {
                     listener(&event, window, cx);

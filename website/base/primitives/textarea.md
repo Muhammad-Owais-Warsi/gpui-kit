@@ -90,7 +90,9 @@ notes.update(cx, |state, cx| {
 ```
 
 Tokens display as unstyled labels. Use the `token` slot to supply your own single-row
-element and `on_token_click` to open a reference. Copy and `value()` return the
+element and `on_token_click` to open a reference. Use `on_token_hover` to report
+pointer entry and exit (`InlineTokenHoverEvent::is_hovered`) without selecting or
+editing, for tooltips or previews; disabled tokens never report hover. Copy and `value()` return the
 real text, such as `@alice`. Save drafts with `content()` and restore them with
 `set_value(content)` to keep their references.
 

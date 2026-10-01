@@ -4692,6 +4692,92 @@ mod tests {
     }
 
     #[gpui::test]
+    fn test_inline_token_hover_reports_presence_without_selecting(cx: &mut TestAppContext) {
+        use crate::input::{InlineToken, InlineTokenPresentation};
+        use gpui::{Bounds, point, px, size};
+        cx.update(crate::init);
+        let view = InputView::build(cx, |state| state.default_value("before @alice after"));
+        let bounds = Bounds::new(point(px(10.), px(20.)), size(px(100.), px(20.)));
+        view.window_handle
+            .update(cx, |_, window, cx| {
+                view.input.update(cx, |state, cx| {
+                    state
+                        .replace_range_with_token(
+                            7..13,
+                            InlineToken::new("a", "@alice"),
+                            window,
+                            cx,
+                        )
+                        .unwrap();
+                    state.set_token_presentation(
+                        InlineTokenPresentation::default().on_token_hover(|_, _, _| {}),
+                    );
+                    state.set_selected_range(0..0, cx);
+                });
+            })
+            .unwrap();
+        view.window_handle
+            .update(cx, |_, _, cx| {
+                let state = view.input.read(cx);
+                let (_, entered) = state
+                    .token_hover(7, bounds, true)
+                    .expect("hover enters an enabled token");
+                assert!(entered.is_hovered());
+                assert_eq!(entered.token().id().as_ref(), "a");
+                assert_eq!(entered.range(), 7..13);
+                assert_eq!(entered.bounds(), bounds);
+                let (_, left) = state
+                    .token_hover(7, bounds, false)
+                    .expect("hover leaves the same token");
+                assert!(!left.is_hovered());
+                assert_eq!(state.selected_range(), 0..0, "hover never selects");
+                assert!(state.token_hover(99, bounds, true).is_none());
+            })
+            .unwrap();
+
+        // Disabled tokens suppress hover, matching click; readonly allows it.
+        view.window_handle
+            .update(cx, |_, _, cx| {
+                view.input.update(cx, |state, cx| {
+                    state.set_disabled(true, cx);
+                });
+            })
+            .unwrap();
+        view.window_handle
+            .update(cx, |_, _, cx| {
+                assert!(view.input.read(cx).token_hover(7, bounds, true).is_none());
+            })
+            .unwrap();
+        view.window_handle
+            .update(cx, |_, _, cx| {
+                view.input.update(cx, |state, cx| {
+                    state.set_disabled(false, cx);
+                    state.set_readonly(true, cx);
+                });
+            })
+            .unwrap();
+        view.window_handle
+            .update(cx, |_, _, cx| {
+                assert!(view.input.read(cx).token_hover(7, bounds, true).is_some());
+            })
+            .unwrap();
+
+        // Without a hover listener there is no hover activation.
+        view.window_handle
+            .update(cx, |_, _, cx| {
+                view.input.update(cx, |state, _| {
+                    state.set_token_presentation(InlineTokenPresentation::default());
+                });
+            })
+            .unwrap();
+        view.window_handle
+            .update(cx, |_, _, cx| {
+                assert!(view.input.read(cx).token_hover(7, bounds, true).is_none());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn test_inline_token_edit_history_and_validation(cx: &mut TestAppContext) {
         let view = InputView::build(cx, |state| state.default_value("问 @alice!"));
         view.window_handle

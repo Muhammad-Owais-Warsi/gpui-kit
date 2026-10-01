@@ -61,18 +61,47 @@ impl InlineTokenClickEvent {
     }
 }
 
+/// Hover snapshot for one atomic inline token. Hover never selects or edits;
+/// it reports pointer presence so the application can show a tooltip or run
+/// custom logic.
+#[derive(Clone)]
+pub struct InlineTokenHoverEvent {
+    span: InlineTokenSpan,
+    bounds: Bounds<Pixels>,
+    hovered: bool,
+}
+impl InlineTokenHoverEvent {
+    pub fn token(&self) -> &InlineToken {
+        self.span.token()
+    }
+    pub fn range(&self) -> Range<usize> {
+        self.span.range()
+    }
+    pub fn bounds(&self) -> Bounds<Pixels> {
+        self.bounds
+    }
+    /// Whether the pointer entered (`true`) or left (`false`) the token.
+    pub fn is_hovered(&self) -> bool {
+        self.hovered
+    }
+}
+
 /// A renderer installed by a styled control. Not part of the supported API.
 #[doc(hidden)]
 pub type InlineTokenRenderer = Rc<dyn Fn(&InlineTokenContext, &mut Window, &mut App) -> AnyElement>;
 /// A click listener installed by a styled control. Not part of the supported API.
 #[doc(hidden)]
 pub type InlineTokenClickListener = Rc<dyn Fn(&InlineTokenClickEvent, &mut Window, &mut App)>;
+/// A hover listener installed by a styled control. Not part of the supported API.
+#[doc(hidden)]
+pub type InlineTokenHoverListener = Rc<dyn Fn(&InlineTokenHoverEvent, &mut Window, &mut App)>;
 
 /// Presentation shared by Base and styled controls. It owns no content.
 #[derive(Clone, Default)]
 pub(crate) struct InlineTokenPresentation {
     renderer: Option<InlineTokenRenderer>,
     listener: Option<InlineTokenClickListener>,
+    hover_listener: Option<InlineTokenHoverListener>,
     secret: bool,
 }
 impl InlineTokenPresentation {
@@ -90,6 +119,13 @@ impl InlineTokenPresentation {
         listener: impl Fn(&InlineTokenClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.listener = Some(Rc::new(listener));
+        self
+    }
+    pub(crate) fn on_token_hover(
+        mut self,
+        listener: impl Fn(&InlineTokenHoverEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.hover_listener = Some(Rc::new(listener));
         self
     }
     pub(super) fn has_listener(&self) -> bool {
@@ -126,18 +162,21 @@ impl<M: InputModeKind> InputBaseState<M> {
     pub(crate) fn set_token_presentation(&mut self, presentation: InlineTokenPresentation) {
         self.token_presentation = presentation;
     }
-    /// Install a styled control's renderer, click listener and secrecy without
-    /// editing or notifying the document. Not part of the supported API.
+    /// Install a styled control's renderer, click and hover listeners and
+    /// secrecy without editing or notifying the document. Not part of the
+    /// supported API.
     #[doc(hidden)]
     pub fn install_token_presentation(
         &mut self,
         renderer: Option<InlineTokenRenderer>,
         listener: Option<InlineTokenClickListener>,
+        hover_listener: Option<InlineTokenHoverListener>,
         secret: bool,
     ) {
         self.token_presentation = InlineTokenPresentation {
             renderer,
             listener,
+            hover_listener,
             secret,
         };
     }
@@ -185,6 +224,31 @@ impl<M: InputModeKind> InputBaseState<M> {
                 span,
                 bounds,
                 event,
+            },
+        ))
+    }
+    /// The token starting at `start`, paired with the hover listener.
+    /// Disabled tokens never report hover, matching click; readonly tokens do.
+    pub(super) fn token_hover(
+        &self,
+        start: usize,
+        bounds: Bounds<Pixels>,
+        hovered: bool,
+    ) -> Option<(InlineTokenHoverListener, InlineTokenHoverEvent)> {
+        if self.disabled || !self.tokens_visible() {
+            return None;
+        }
+        let span = self
+            .token_spans()
+            .iter()
+            .find(|span| span.range().start == start)?
+            .clone();
+        Some((
+            self.token_presentation.hover_listener.clone()?,
+            InlineTokenHoverEvent {
+                span,
+                bounds,
+                hovered,
             },
         ))
     }
