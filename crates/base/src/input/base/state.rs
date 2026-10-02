@@ -359,6 +359,13 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(super) document_revision: u64,
     pub(super) token_presentation: super::InlineTokenPresentation,
     pub(super) token_layout_cache: Option<Box<super::token_presentation::TokenLayoutCache>>,
+    /// Real per-frame bounds of the placed token elements, keyed by token
+    /// start offset; used for hover payloads and stale-hover reconciliation.
+    pub(super) token_bounds: std::collections::HashMap<usize, Bounds<Pixels>>,
+    /// The currently hovered token and its last measured bounds. Retained so
+    /// hover exit can still be delivered when the token is removed, scrolled
+    /// out, or disabled.
+    pub(super) hovered_token: Option<(super::InlineTokenSpan, Bounds<Pixels>)>,
     /// The start offset of a pressed token, with the document revision and
     /// pointer position at the press.
     pub(super) pressed_token: Option<(usize, u64, Point<Pixels>)>,
@@ -720,6 +727,8 @@ impl<M: InputModeKind> InputBaseState<M> {
             validated_token_edit: false,
             document_revision: 0,
             token_presentation: Default::default(),
+            token_bounds: Default::default(),
+            hovered_token: None,
             token_layout_cache: None,
             pressed_token: None,
             selections: Selections::default(),
@@ -4740,20 +4749,21 @@ mod tests {
             .unwrap();
         view.window_handle
             .update(cx, |_, _, cx| {
-                let state = view.input.read(cx);
-                let (_, entered) = state
-                    .token_hover(7, bounds, true)
-                    .expect("hover enters an enabled token");
-                assert!(entered.is_hovered());
-                assert_eq!(entered.token().id().as_ref(), "a");
-                assert_eq!(entered.range(), 7..13);
-                assert_eq!(entered.bounds(), bounds);
-                let (_, left) = state
-                    .token_hover(7, bounds, false)
-                    .expect("hover leaves the same token");
-                assert!(!left.is_hovered());
-                assert_eq!(state.selected_range(), 0..0, "hover never selects");
-                assert!(state.token_hover(99, bounds, true).is_none());
+                view.input.update(cx, |state, _| {
+                    let (_, entered) = state
+                        .token_hover(7, bounds, true)
+                        .expect("hover enters an enabled token");
+                    assert!(entered.is_hovered());
+                    assert_eq!(entered.token().id().as_ref(), "a");
+                    assert_eq!(entered.range(), 7..13);
+                    assert_eq!(entered.bounds(), bounds);
+                    let (_, left) = state
+                        .token_hover(7, bounds, false)
+                        .expect("hover leaves the same token");
+                    assert!(!left.is_hovered());
+                    assert_eq!(state.selected_range(), 0..0, "hover never selects");
+                    assert!(state.token_hover(99, bounds, true).is_none());
+                });
             })
             .unwrap();
 
@@ -4767,7 +4777,9 @@ mod tests {
             .unwrap();
         view.window_handle
             .update(cx, |_, _, cx| {
-                assert!(view.input.read(cx).token_hover(7, bounds, true).is_none());
+                view.input.update(cx, |state, _| {
+                    assert!(state.token_hover(7, bounds, true).is_none())
+                })
             })
             .unwrap();
         view.window_handle
@@ -4780,7 +4792,9 @@ mod tests {
             .unwrap();
         view.window_handle
             .update(cx, |_, _, cx| {
-                assert!(view.input.read(cx).token_hover(7, bounds, true).is_some());
+                view.input.update(cx, |state, _| {
+                    assert!(state.token_hover(7, bounds, true).is_some())
+                })
             })
             .unwrap();
 
@@ -4794,9 +4808,129 @@ mod tests {
             .unwrap();
         view.window_handle
             .update(cx, |_, _, cx| {
-                assert!(view.input.read(cx).token_hover(7, bounds, true).is_none());
+                view.input.update(cx, |state, _| {
+                    assert!(state.token_hover(7, bounds, true).is_none())
+                })
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_inline_token_hover_exit_delivered_when_token_removed(cx: &mut TestAppContext) {
+        use crate::input::{InlineToken, InlineTokenPresentation};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        cx.update(crate::init);
+        let view = InputView::build(cx, |state| state.default_value("before @alice after"));
+        let events: Rc<RefCell<Vec<(SharedString, bool)>>> = Rc::new(RefCell::new(Vec::new()));
+        let sink = events.clone();
+        view.window_handle
+            .update(cx, |_, window, cx| {
+                view.input.update(cx, |state, cx| {
+                    state
+                        .replace_range_with_token(
+                            7..13,
+                            InlineToken::new("a", "@alice"),
+                            window,
+                            cx,
+                        )
+                        .unwrap();
+                    state.set_token_presentation(
+                        InlineTokenPresentation::default()
+                            .token(|_, _, _| div().w(px(100.)).h(px(20.)))
+                            .on_token_hover(move |event, _, _| {
+                                sink.borrow_mut()
+                                    .push((event.token().id().clone(), event.is_hovered()));
+                            }),
+                    );
+                });
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(view.window_handle.into(), cx);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let known_bounds = view.input.read_with(&visual, |state, _| {
+            state
+                .token_bounds
+                .get(&7)
+                .copied()
+                .expect("placed token bounds")
+        });
+        visual.simulate_mouse_move(known_bounds.center(), None, gpui::Modifiers::default());
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(events.borrow().as_slice(), &[("a".into(), true)]);
+
+        // Remove the token while the pointer is still over its stale row: the
+        // exit must fire even though the token element that owns the hover
+        // mask is gone.
+        view.window_handle
+            .update(cx, |_, window, cx| {
+                view.input
+                    .update(cx, |state, cx| state.set_value("no tokens", window, cx));
+            })
+            .unwrap();
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(
+            events.borrow().as_slice(),
+            &[("a".into(), true), ("a".into(), false)]
+        );
+    }
+
+    #[gpui::test]
+    fn test_inline_token_hover_bounds_stay_single_row_at_wrap_boundary(cx: &mut TestAppContext) {
+        use crate::input::{InlineToken, InlineTokenPresentation};
+        cx.update(crate::init);
+        let view = InputView::build_textarea(cx, |state| {
+            state
+                .rows(4)
+                .default_value("aaaa bbbb cccc dddd @alice eeee ffff")
+        });
+        view.window_handle
+            .update(cx, |_, window, cx| {
+                view.input.update(cx, |state, cx| {
+                    state
+                        .replace_range_with_token(
+                            20..26,
+                            InlineToken::new("a", "@alice"),
+                            window,
+                            cx,
+                        )
+                        .unwrap();
+                    state.set_token_presentation(
+                        InlineTokenPresentation::default()
+                            .token(|_, _, _| div().w(px(60.)).h(px(20.))),
+                    );
+                });
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(view.window_handle.into(), cx);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        let (placed, ranged, line_height) = view.input.read_with(&visual, |state, _| {
+            (
+                state
+                    .token_bounds
+                    .get(&20)
+                    .copied()
+                    .expect("placed token bounds"),
+                state.range_to_bounds(&(20..26)),
+                state.last_layout.as_ref().unwrap().line_height,
+            )
+        });
+        // The laid-out element always occupies exactly one row of height, even
+        // when the range-extent path resolves the same end boundary onto the
+        // next visual row at a soft-wrap edge.
+        assert!(placed.size.height <= line_height + px(1.), "{placed:?}");
+        assert!(
+            placed.size.width <= px(61.) && placed.size.width > px(0.),
+            "{placed:?}"
+        );
+        if let Some(ranged) = ranged {
+            assert!(
+                ranged.size.height >= placed.size.height - px(1.),
+                "{ranged:?} vs {placed:?}"
+            );
+        }
     }
 
     #[gpui::test]

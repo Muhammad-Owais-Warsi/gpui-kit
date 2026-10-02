@@ -1514,16 +1514,21 @@ fn materialize_component(
                 behavior
                     .on_token_click
                     .map(|id| crate::ComponentCallback::from_runtime(runtime, id)),
+            )
+            .with_hover(
+                &state,
                 behavior
                     .on_token_hover
                     .map(|id| crate::ComponentCallback::from_runtime(runtime, id)),
             );
-            let input = callbacks.apply(
-                Input::new(&state),
-                |input, render| input.token(move |token, window, cx| render(token, window, cx)),
-                |input, listen| {
-                    input.on_token_click(move |event, window, cx| listen(event, window, cx))
-                },
+            let input = callbacks.apply_hover(
+                callbacks.apply(
+                    Input::new(&state),
+                    |input, render| input.token(move |token, window, cx| render(token, window, cx)),
+                    |input, listen| {
+                        input.on_token_click(move |event, window, cx| listen(event, window, cx))
+                    },
+                ),
                 |input, listen| {
                     input.on_token_hover(move |event, window, cx| listen(event, window, cx))
                 },

@@ -1575,12 +1575,11 @@ impl<M: InputModeKind> TextElement<M> {
                 // application can show a tooltip or run custom logic.
                 let hovered = *hovered;
                 let activation = hover_state.update(cx, |state, _| {
-                    let span = state
-                        .token_spans()
-                        .iter()
-                        .find(|s| s.range().start == start)?
-                        .clone();
-                    let bounds = state.range_to_bounds(&span.range())?;
+                    // Anchor to the real laid-out token rect, not the
+                    // range-to-bounds guess: a token at a soft-wrap boundary
+                    // would otherwise report a zero/negative width or a
+                    // two-row height.
+                    let bounds = state.token_bounds.get(&start).copied()?;
                     state.token_hover(start, bounds, hovered)
                 });
                 if let Some((listener, event)) = activation {
@@ -1598,7 +1597,7 @@ impl<M: InputModeKind> TextElement<M> {
         viewport: Pixels,
         window: &mut Window,
         cx: &mut App,
-    ) -> std::collections::HashMap<usize, AnyElement> {
+    ) -> std::collections::HashMap<usize, (AnyElement, Size<Pixels>)> {
         let style = window.text_style();
         let state = self.state.read(cx);
         let key = (
@@ -1610,11 +1609,25 @@ impl<M: InputModeKind> TextElement<M> {
         );
         if !state.tokens_visible() {
             if state.token_layout_cache.is_none() {
+                let exit = self.state.update(cx, |state, _| {
+                    state.token_bounds.clear();
+                    state.reconcile_token_hover()
+                });
+                if let Some((listener, event)) = exit {
+                    listener(&event, window, cx);
+                }
                 return Default::default();
             }
             self.state.update(cx, |state, cx| {
                 state.display_map.set_inline_metrics(Rc::from([]), cx)
             });
+            let exit = self.state.update(cx, |state, _| {
+                state.token_bounds.clear();
+                state.reconcile_token_hover()
+            });
+            if let Some((listener, event)) = exit {
+                listener(&event, window, cx);
+            }
             return Default::default();
         }
         let revision = state.document_revision;
@@ -1661,7 +1674,7 @@ impl<M: InputModeKind> TextElement<M> {
                 cx,
             );
             measured.push((token.token().clone(), size.width.min(width).max(px(1.))));
-            elements.insert(token.range().start, element);
+            elements.insert(token.range().start, (element, size));
         }
         self.state.update(cx, |state, cx| {
             let mut cache = state.token_layout_cache.take().unwrap_or_default();
@@ -1863,12 +1876,19 @@ impl<M: InputModeKind> TextElement<M> {
         &self,
         layout: &LastLayout,
         bounds: Bounds<Pixels>,
-        mut measured: std::collections::HashMap<usize, AnyElement>,
+        mut measured: std::collections::HashMap<usize, (AnyElement, Size<Pixels>)>,
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<AnyElement> {
         let state = self.state.read(cx);
         if !state.tokens_visible() {
+            let exit = self.state.update(cx, |state, _| {
+                state.token_bounds.clear();
+                state.reconcile_token_hover()
+            });
+            if let Some((listener, event)) = exit {
+                listener(&event, window, cx);
+            }
             return vec![];
         }
         let width = state
@@ -1895,12 +1915,14 @@ impl<M: InputModeKind> TextElement<M> {
             }
             y += layout.lines[ix].size(layout.line_height).height;
         }
-        placements
-            .into_iter()
-            .map(|(token, origin)| {
-                let mut element = measured.remove(&token.range().start).unwrap_or_else(|| {
+        let mut out = Vec::new();
+        let mut token_bounds = std::collections::HashMap::new();
+        for (token, origin) in placements {
+            let (mut element, element_size) = match measured.remove(&token.range().start) {
+                Some(found) => found,
+                None => {
                     let mut element = self.token_element(&token, window, cx);
-                    element.layout_as_root(
+                    let element_size = element.layout_as_root(
                         size(
                             gpui::AvailableSpace::MaxContent,
                             gpui::AvailableSpace::Definite(layout.line_height),
@@ -1908,12 +1930,21 @@ impl<M: InputModeKind> TextElement<M> {
                         window,
                         cx,
                     );
-                    element
-                });
-                element.prepaint_at(origin, window, cx);
-                element
-            })
-            .collect()
+                    (element, element_size)
+                }
+            };
+            element.prepaint_at(origin, window, cx);
+            token_bounds.insert(token.range().start, Bounds::new(origin, element_size));
+            out.push(element);
+        }
+        let exit = self.state.update(cx, |state, _| {
+            state.token_bounds = token_bounds;
+            state.reconcile_token_hover()
+        });
+        if let Some((listener, event)) = exit {
+            listener(&event, window, cx);
+        }
+        out
     }
 
     #[allow(clippy::too_many_arguments)]

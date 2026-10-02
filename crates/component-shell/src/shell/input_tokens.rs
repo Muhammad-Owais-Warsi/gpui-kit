@@ -109,11 +109,9 @@ pub(super) fn prepare(request: &MaterializeRequest<'_>, state: State) -> anyhow:
         }
     }
     let callbacks = dispatch!(&state, |state| InlineTokenCallbacks::new(
-        state,
-        renderer,
-        listener,
-        hover_listener
+        state, renderer, listener
     ));
+    let callbacks = dispatch!(&state, |state| callbacks.with_hover(state, hover_listener));
     Ok(Binding {
         state,
         callbacks,
@@ -122,24 +120,28 @@ pub(super) fn prepare(request: &MaterializeRequest<'_>, state: State) -> anyhow:
 }
 impl Binding {
     pub(super) fn input(&self, input: Input) -> Input {
-        self.callbacks.apply(
-            input,
-            |input, render| input.token(move |token, window, cx| render(token, window, cx)),
-            |input, listen| {
-                input.on_token_click(move |event, window, cx| listen(event, window, cx))
-            },
+        self.callbacks.apply_hover(
+            self.callbacks.apply(
+                input,
+                |input, render| input.token(move |token, window, cx| render(token, window, cx)),
+                |input, listen| {
+                    input.on_token_click(move |event, window, cx| listen(event, window, cx))
+                },
+            ),
             |input, listen| {
                 input.on_token_hover(move |event, window, cx| listen(event, window, cx))
             },
         )
     }
     pub(super) fn textarea(&self, input: Textarea) -> Textarea {
-        self.callbacks.apply(
-            input,
-            |input, render| input.token(move |token, window, cx| render(token, window, cx)),
-            |input, listen| {
-                input.on_token_click(move |event, window, cx| listen(event, window, cx))
-            },
+        self.callbacks.apply_hover(
+            self.callbacks.apply(
+                input,
+                |input, render| input.token(move |token, window, cx| render(token, window, cx)),
+                |input, listen| {
+                    input.on_token_click(move |event, window, cx| listen(event, window, cx))
+                },
+            ),
             |input, listen| {
                 input.on_token_hover(move |event, window, cx| listen(event, window, cx))
             },

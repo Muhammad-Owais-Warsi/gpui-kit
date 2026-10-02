@@ -292,8 +292,9 @@ state_binding!(InputState, invoke_input, input_token_state_methods);
 state_binding!(TextareaState, invoke_textarea, textarea_token_state_methods);
 
 /// Script callbacks for one input's tokens, adapted to the native
-/// `token` / `on_token_click` / `on_token_hover` builders of any Input or
-/// Textarea element.
+/// `token` / `on_token_click` builders of any Input or Textarea element.
+/// Hover uses the separate [`Self::with_hover`] / [`Self::apply_hover`] pair
+/// so the original signatures keep compiling for existing callers.
 pub struct InlineTokenCallbacks {
     renderer: Option<gpui_base::input::InlineTokenRenderer>,
     listener: Option<gpui_base::input::InlineTokenClickListener>,
@@ -306,7 +307,6 @@ impl InlineTokenCallbacks {
         state: &Entity<gpui_base::input::InputBaseState<M>>,
         renderer: Option<crate::ComponentElementCallback>,
         listener: Option<crate::ComponentCallback>,
-        hover_listener: Option<crate::ComponentCallback>,
     ) -> Self {
         use gpui::{IntoElement as _, ParentElement as _};
         let renderer = renderer.map(|renderer| {
@@ -339,10 +339,28 @@ impl InlineTokenCallbacks {
                 });
             listen
         });
-        let hover_listener = hover_listener.map(|listener| {
-            let state = state.clone();
+        Self {
+            renderer,
+            listener,
+            hover_listener: None,
+        }
+    }
+    /// Bind a hover listener without changing [`Self::new`]. The closure keeps
+    /// only a weak handle to the state: removing a script input that uses just
+    /// `on_token_hover` must still release its state, and a missing entity is
+    /// a normal lifecycle outcome.
+    pub fn with_hover<M: gpui_base::input::InputModeKind>(
+        mut self,
+        state: &Entity<gpui_base::input::InputBaseState<M>>,
+        hover_listener: Option<crate::ComponentCallback>,
+    ) -> Self {
+        self.hover_listener = hover_listener.map(|listener| {
+            let weak = state.downgrade();
             let listen: gpui_base::input::InlineTokenHoverListener =
                 Rc::new(move |event, window, cx| {
+                    let Some(state) = weak.upgrade() else {
+                        return;
+                    };
                     let data = inline_token_hover_data(event, state.read(cx).text());
                     if let Err(error) = listener.invoke_data_with(&[data], window, cx) {
                         tracing::error!("inline token hover failed: {error:#}");
@@ -350,11 +368,7 @@ impl InlineTokenCallbacks {
                 });
             listen
         });
-        Self {
-            renderer,
-            listener,
-            hover_listener,
-        }
+        self
     }
     /// Install the callbacks on an element through its own builders.
     pub fn apply<E>(
@@ -362,16 +376,23 @@ impl InlineTokenCallbacks {
         element: E,
         token: impl FnOnce(E, gpui_base::input::InlineTokenRenderer) -> E,
         on_token_click: impl FnOnce(E, gpui_base::input::InlineTokenClickListener) -> E,
-        on_token_hover: impl FnOnce(E, gpui_base::input::InlineTokenHoverListener) -> E,
     ) -> E {
         let element = match &self.renderer {
             Some(renderer) => token(element, renderer.clone()),
             None => element,
         };
-        let element = match &self.listener {
+        match &self.listener {
             Some(listener) => on_token_click(element, listener.clone()),
             None => element,
-        };
+        }
+    }
+    /// Install the hover listener from [`Self::with_hover`] on an element
+    /// through its own builder.
+    pub fn apply_hover<E>(
+        &self,
+        element: E,
+        on_token_hover: impl FnOnce(E, gpui_base::input::InlineTokenHoverListener) -> E,
+    ) -> E {
         match &self.hover_listener {
             Some(listener) => on_token_hover(element, listener.clone()),
             None => element,

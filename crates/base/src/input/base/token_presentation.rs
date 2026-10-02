@@ -229,8 +229,10 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
     /// The token starting at `start`, paired with the hover listener.
     /// Disabled tokens never report hover, matching click; readonly tokens do.
+    /// Records and clears the retained hover snapshot used for exit
+    /// reconciliation.
     pub(super) fn token_hover(
-        &self,
+        &mut self,
         start: usize,
         bounds: Bounds<Pixels>,
         hovered: bool,
@@ -243,12 +245,41 @@ impl<M: InputModeKind> InputBaseState<M> {
             .iter()
             .find(|span| span.range().start == start)?
             .clone();
+        if hovered {
+            self.hovered_token = Some((span.clone(), bounds));
+        } else {
+            self.hovered_token = None;
+        }
         Some((
             self.token_presentation.hover_listener.clone()?,
             InlineTokenHoverEvent {
                 span,
                 bounds,
                 hovered,
+            },
+        ))
+    }
+    /// Emit the retained exit when the hovered token is no longer there:
+    /// removed programmatically, hidden or scrolled out of the laid-out rows,
+    /// masked, or disabled. Hover exit must degrade to "just leave" even when
+    /// the token and its geometry are gone, so this never looks the token up.
+    pub(super) fn reconcile_token_hover(
+        &mut self,
+    ) -> Option<(InlineTokenHoverListener, InlineTokenHoverEvent)> {
+        let (span, bounds) = self.hovered_token.take()?;
+        let still_hoverable = !self.disabled
+            && self.tokens_visible()
+            && self.token_bounds.contains_key(&span.range().start);
+        if still_hoverable {
+            self.hovered_token = Some((span, bounds));
+            return None;
+        }
+        Some((
+            self.token_presentation.hover_listener.clone()?,
+            InlineTokenHoverEvent {
+                span,
+                bounds,
+                hovered: false,
             },
         ))
     }
