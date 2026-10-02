@@ -31,8 +31,8 @@ Install the native toolchain for your operating system, then add the `gpui-kit` 
       <pre><code class="language-bash">sudo apt update
 sudo apt install -y gcc g++ clang libfontconfig-dev libwayland-dev \
   libwebkit2gtk-4.1-dev libxkbcommon-x11-dev libx11-xcb-dev \
-  libssl-dev libzstd-dev vulkan-validationlayers libvulkan1</code></pre>
-      <p>This matches the repository's <code>script/install-linux.sh</code> for Ubuntu 24.04. Other distributions need equivalent development packages. To display a window, run in a graphical Wayland or X11 session with a working Vulkan driver; installing <code>libvulkan1</code> alone does not install a GPU driver.</p>
+  libssl-dev libzstd-dev libasound2-dev vulkan-validationlayers libvulkan1</code></pre>
+      <p>This matches the repository's <code>script/install-linux.sh</code> for Ubuntu 24.04. Other distributions need equivalent development packages. <code>libasound2-dev</code> (ALSA) is needed only by the <code>speech</code> feature. To display a window, run in a graphical Wayland or X11 session with a working Vulkan driver; installing <code>libvulkan1</code> alone does not install a GPU driver.</p>
     </section>
   </div>
 </div>

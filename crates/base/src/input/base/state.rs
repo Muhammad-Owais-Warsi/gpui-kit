@@ -2790,6 +2790,23 @@ impl<M: InputModeKind> InputBaseState<M> {
         selection
     }
 
+    /// Whether an edit rewrites the character before a collapsed cursor, as the
+    /// macOS Korean IME does on each keystroke instead of marking text.
+    fn rewrites_typed_char(
+        &self,
+        selection: CursorSelection,
+        range: &Range<usize>,
+        old_text: &str,
+        new_text: &str,
+    ) -> bool {
+        !self.silent_replace_text
+            && selection.is_collapsed()
+            && selection.cursor_offset() == range.end
+            && old_text.chars().count() == 1
+            && !old_text.contains(['\n', '\r'])
+            && !new_text.contains(['\n', '\r'])
+    }
+
     fn push_history(
         &mut self,
         text: &Rope,
@@ -2815,6 +2832,7 @@ impl<M: InputModeKind> InputBaseState<M> {
                 && old_text.is_empty()
                 && !new_text.is_empty()
                 && !new_text.contains(['\n', '\r'])
+                || self.rewrites_typed_char(selection_before, &range, &old_text, new_text)
             {
                 EditIntent::Typing
             } else {
@@ -4361,8 +4379,12 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             y_offset += line.size(line_height).height;
         }
 
-        let start_origin = start_origin.unwrap_or_default();
-        let mut end_origin = end_origin.unwrap_or_default();
+        let start_origin = start_origin.or_else(|| {
+            let offset = self.last_cursor.or(Some(self.cursor()))?;
+            let (_, _, origin) = self.line_and_position_for_offset(offset);
+            origin.map(|origin| origin - line_number_origin)
+        })?;
+        let mut end_origin = end_origin.unwrap_or(start_origin);
         // Ensure at same line.
         end_origin.y = start_origin.y;
 
@@ -7304,6 +7326,61 @@ mod tests {
         });
     }
 
+    /// The macOS Korean IME rewrites the character it just inserted.
+    #[gpui::test]
+    fn test_undo_manager_ime_rewrites_of_typed_char_are_one_group(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_value("é ", window, cx);
+                state.set_selected_range(3..3, cx);
+                // g k s r m f: "ㅎ" -> "하" -> "한", then "ㄱ" -> "그" -> "글"
+                state.replace_text_in_range(None, "ㅎ", window, cx);
+                state.replace_text_in_range(Some(2..3), "하", window, cx);
+                state.replace_text_in_range(Some(2..3), "한", window, cx);
+                state.replace_text_in_range(None, "ㄱ", window, cx);
+                state.replace_text_in_range(Some(3..4), "그", window, cx);
+                state.replace_text_in_range(Some(3..4), "글", window, cx);
+                assert_eq!(state.value(), "é 한글");
+                assert_eq!(state.undo_manager.undo_count(), 1);
+
+                state.undo(&Undo, window, cx);
+                assert_eq!(state.value(), "é ");
+                assert_eq!(state.selected_range(), 3..3);
+
+                state.redo(&Redo, window, cx);
+                assert_eq!(state.value(), "é 한글");
+                assert_eq!(state.selected_range(), 9..9);
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn test_undo_manager_rewrite_after_cursor_movement_is_separate(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.replace_text_in_range(None, "c", window, cx);
+                state.replace_text_in_range(None, "e", window, cx);
+                state.left(&MoveLeft, window, cx);
+                state.right(&MoveRight, window, cx);
+                state.replace_text_in_range(Some(1..2), "é", window, cx);
+                assert_eq!(state.value(), "cé");
+
+                state.undo(&Undo, window, cx);
+                assert_eq!(state.value(), "ce");
+                state.undo(&Undo, window, cx);
+                assert_eq!(state.value(), "");
+            });
+        });
+    }
+
     #[gpui::test]
     fn test_undo_manager_selection_restored_by_undo_and_redo(cx: &mut TestAppContext) {
         let input_view = InputView::build(cx, |state| state);
@@ -9898,6 +9975,59 @@ mod tests {
             });
         });
         assert_ne!(input.read_with(&cx, |state, _| state.paste_target()), moved);
+    }
+
+    #[gpui::test]
+    fn test_ime_candidate_bounds_fallback_before_repaint(cx: &mut TestAppContext) {
+        let input_view = InputView::build_textarea(cx, |state| {
+            state.default_value("这是一段已经输入的中文文字")
+        });
+        let mut visual = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+
+        visual.update(|window, cx| {
+            input_view.input.update(cx, |state, cx| {
+                state.focus(window, cx);
+                let len = state.text.len();
+                state.set_cursor_to(len);
+            });
+        });
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+
+        visual.update(|window, cx| {
+            input_view.input.update(cx, |state, cx| {
+                let bounds = state.text_bounds().unwrap_or_default();
+                let before = state.selected_text_range(false, window, cx).unwrap().range;
+                let previous = state
+                    .bounds_for_range(before.end..before.end, bounds, window, cx)
+                    .unwrap();
+
+                state.replace_and_mark_text_in_range(None, "n", None, window, cx);
+
+                let after = state.selected_text_range(false, window, cx).unwrap().range;
+                let pending = state
+                    .bounds_for_range(after.end..after.end, bounds, window, cx)
+                    .unwrap();
+
+                assert!(
+                    (pending.origin.x - previous.origin.x).abs() < px(40.0),
+                    "pending origin.x {:?} must remain close to previous origin.x {:?}",
+                    pending.origin.x,
+                    previous.origin.x
+                );
+
+                let range_bounds = state
+                    .bounds_for_range(before.end..after.end, bounds, window, cx)
+                    .unwrap();
+                assert!(
+                    (range_bounds.origin.x - previous.origin.x).abs() < px(40.0),
+                    "range_bounds origin.x {:?} must remain close to previous origin.x {:?}",
+                    range_bounds.origin.x,
+                    previous.origin.x
+                );
+                assert!(range_bounds.size.width >= px(0.0));
+            });
+        });
     }
 }
 

@@ -27,6 +27,8 @@ test-support = ["gpui/test-support", "gpui_platform/test-support", "gpui-base/te
 profiler = ["gpui/profiler"]
 inspector = ["gpui/inspector", "gpui-base/inspector", "gpui-component?/inspector"]
 decimal = ["component", "gpui-component/decimal"]
+# Speech input: microphone capture and the system speech recognizer.
+speech = ["component", "gpui-component/speech"]
 tree-sitter = ["component", "gpui-component/tree-sitter"]
 tree-sitter-languages = ["component", "gpui-component/tree-sitter-languages"]
 tree-sitter-astro = ["component", "gpui-component/tree-sitter-astro"]

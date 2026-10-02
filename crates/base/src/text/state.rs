@@ -179,51 +179,7 @@ impl TextViewState {
             async move |weak_self, cx| {
                 while let Ok(parsed_update) = rx_result.recv().await {
                     _ = weak_self.update(cx, |state, cx| {
-                        if parsed_update.revision != state.revision {
-                            return;
-                        }
-                        if parsed_update.baseline_ack {
-                            debug_assert!(parsed_update.full_parse);
-                            return;
-                        }
-
-                        match parsed_update.result {
-                            Ok(content) => {
-                                let append =
-                                    parsed_update.selection_compatible && !parsed_update.full_parse;
-                                if append && state.full_update_revision <= state.committed_revision
-                                {
-                                    state.splice_appended_blocks(&content.document);
-                                }
-                                state.reconcile_range_highlights(
-                                    &content.document,
-                                    parsed_update.revision,
-                                    append,
-                                );
-                                state.stream_fade.record(
-                                    &state.parsed_content.document,
-                                    &content.document,
-                                    Instant::now(),
-                                );
-                                state.parsed_content = content;
-                                state.parsed_error = None;
-                                state.compatible_layout_update = parsed_update.selection_compatible;
-                                if parsed_update.full_parse {
-                                    state.invalidate_measured_heights();
-                                }
-                            }
-                            Err(err) => {
-                                state.stream_fade.discard_pending();
-                                state.parsed_error = Some(err);
-                            }
-                        }
-                        // Don't interrupt an active drag-selection; the stored
-                        // positions remain valid for append-only updates and will
-                        // self-correct on the next mouse-move event.
-                        if !parsed_update.selection_compatible && !state.is_selecting {
-                            state.reset_selection_and_adapter(cx);
-                        }
-                        cx.notify();
+                        state.commit_parsed_update(parsed_update, cx);
                     });
                 }
             }
@@ -581,6 +537,64 @@ impl TextViewState {
         }
 
         _ = self.tx.try_send(update_options);
+    }
+
+    /// Commit a result of the background parser.
+    ///
+    /// A stream that appends faster than a parse completes has always moved
+    /// past the revision the result was parsed from, so only discarding
+    /// results of an older revision would show nothing until the stream
+    /// stops. A result parsed since the text was last replaced is a prefix of
+    /// the current text and is committed; one from before that replacement,
+    /// or older than what is already committed, is discarded.
+    fn commit_parsed_update(&mut self, parsed_update: ParsedUpdate, cx: &mut Context<Self>) {
+        if parsed_update.revision < self.full_update_revision
+            || parsed_update.revision <= self.committed_revision
+        {
+            return;
+        }
+        if parsed_update.baseline_ack {
+            debug_assert!(parsed_update.full_parse);
+            return;
+        }
+
+        match parsed_update.result {
+            Ok(content) => {
+                let append = parsed_update.selection_compatible && !parsed_update.full_parse;
+                if append && self.full_update_revision <= self.committed_revision {
+                    self.splice_appended_blocks(&content.document);
+                }
+                self.reconcile_range_highlights(&content.document, parsed_update.revision, append);
+                self.stream_fade.record(
+                    &self.parsed_content.document,
+                    &content.document,
+                    Instant::now(),
+                );
+                // This result may cover only part of the queued appends.
+                // Keep the uncommitted tail pending from this document's end,
+                // rather than consuming its fade with the earlier chunk.
+                if parsed_update.revision < self.revision {
+                    self.stream_fade.note_extend(content.document.source.len());
+                }
+                self.parsed_content = content;
+                self.parsed_error = None;
+                self.compatible_layout_update = parsed_update.selection_compatible;
+                if parsed_update.full_parse {
+                    self.invalidate_measured_heights();
+                }
+            }
+            Err(err) => {
+                self.stream_fade.discard_pending();
+                self.parsed_error = Some(err);
+            }
+        }
+        // Don't interrupt an active drag-selection; the stored
+        // positions remain valid for append-only updates and will
+        // self-correct on the next mouse-move event.
+        if !parsed_update.selection_compatible && !self.is_selecting {
+            self.reset_selection_and_adapter(cx);
+        }
+        cx.notify();
     }
 
     /// The text this view renders, which [`RangeHighlight`] ranges index.
@@ -1352,6 +1366,43 @@ mod tests {
         }
 
         #[gpui::test]
+        fn overtaken_parse_preserves_the_remaining_chunks_fade(cx: &mut TestAppContext) {
+            let state = fading_state("hello", cx);
+            let parsed = super::push_and_parse(&state, " one", cx);
+            state.update(cx, |state, cx| {
+                state.push_str(" two", cx);
+                state.commit_parsed_update(parsed, cx);
+            });
+            assert_eq!(fades(&state, TextLeafKey::block(0), cx), Some(vec![5..9]));
+
+            cx.run_until_parked();
+            assert_eq!(
+                fades(&state, TextLeafKey::block(0), cx),
+                Some(vec![5..9, 9..13])
+            );
+        }
+
+        #[gpui::test]
+        fn overtaken_parse_preserves_a_remaining_blocks_fade(cx: &mut TestAppContext) {
+            let state = fading_state("hello", cx);
+            let parsed = super::push_and_parse(&state, " one", cx);
+            state.update(cx, |state, cx| {
+                state.push_str("\n\nsecond", cx);
+                state.commit_parsed_update(parsed, cx);
+            });
+            assert_eq!(fades(&state, TextLeafKey::block(0), cx), Some(vec![5..9]));
+
+            // A third chunk arrives while the second is still uncommitted.
+            state.update(cx, |state, cx| state.push_str(" third", cx));
+            cx.run_until_parked();
+            let ranges = fades(&state, TextLeafKey::block(11), cx).expect("new paragraph fades");
+            assert_eq!(
+                ranges.into_iter().flatten().collect::<Vec<_>>(),
+                (0..12).collect::<Vec<_>>()
+            );
+        }
+
+        #[gpui::test]
         fn set_text_extending_the_text_fades_like_push_str(cx: &mut TestAppContext) {
             let state = fading_state("hello", cx);
             state.update(cx, |state, cx| state.set_text("hello world", cx));
@@ -1649,6 +1700,76 @@ mod tests {
         state.read_with(cx, |state, _| {
             assert_eq!(state.text.as_str(), expected.as_str());
             assert_eq!(state.source().as_str(), expected.as_str());
+        });
+    }
+
+    /// Push `chunk` and parse it the way the background parser would, without
+    /// running the parser, returning the update it would send.
+    fn push_and_parse(
+        state: &Entity<TextViewState>,
+        chunk: &str,
+        cx: &mut TestAppContext,
+    ) -> ParsedUpdate {
+        let (revision, baseline) = state.update(cx, |state, cx| {
+            state.push_str(chunk, cx);
+            (state.revision, state.parsed_content.clone())
+        });
+        let options = UpdateOptions {
+            revision,
+            pending_text: chunk.to_string(),
+            append: true,
+            mode: ParseMode::Compatible,
+            markdown_extensions: Arc::default(),
+        };
+        ParsedUpdate {
+            revision,
+            full_parse: false,
+            selection_compatible: true,
+            baseline_ack: false,
+            result: parse_content(TextViewFormat::Markdown, baseline, &options),
+        }
+    }
+
+    #[gpui::test]
+    fn stream_commits_a_parse_that_a_newer_chunk_overtook(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let state = cx.update(|cx| cx.new(|cx| TextViewState::markdown("# Answer\n\n", cx)));
+        cx.run_until_parked();
+
+        // Chunks arriving faster than they parse always push the next chunk
+        // before the previous parse lands.
+        let parsed = push_and_parse(&state, "Streaming", cx);
+        state.update(cx, |state, cx| {
+            state.push_str(" tokens", cx);
+            state.commit_parsed_update(parsed, cx);
+            assert_eq!(state.source().as_str(), "# Answer\n\nStreaming");
+        });
+
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.source().as_str(), "# Answer\n\nStreaming tokens");
+        });
+    }
+
+    #[gpui::test]
+    fn a_parse_from_before_a_replacement_is_discarded(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let state = cx.update(|cx| cx.new(|cx| TextViewState::markdown("old", cx)));
+        cx.run_until_parked();
+
+        let parsed = push_and_parse(&state, " text", cx);
+        // Large enough to parse in the background, so the replacement is not
+        // committed yet when the older parse lands.
+        let replacement = "x".repeat(MAX_SYNC_FULL_REPLACE_BYTES + 1);
+        state.update(cx, |state, cx| {
+            state.set_text(&replacement, cx);
+            state.commit_parsed_update(parsed, cx);
+            assert_eq!(state.source().as_str(), "old");
+        });
+
+        cx.run_until_parked();
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.source().as_str(), replacement.as_str());
         });
     }
 

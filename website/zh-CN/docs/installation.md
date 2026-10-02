@@ -31,8 +31,8 @@ order: -1
       <pre><code class="language-bash">sudo apt update
 sudo apt install -y gcc g++ clang libfontconfig-dev libwayland-dev \
   libwebkit2gtk-4.1-dev libxkbcommon-x11-dev libx11-xcb-dev \
-  libssl-dev libzstd-dev vulkan-validationlayers libvulkan1</code></pre>
-      <p>此清单与仓库的 <code>script/install-linux.sh</code> 一致，适用于 Ubuntu 24.04；其他发行版需要安装对应的开发包。显示窗口还需要可用的 Wayland 或 X11 图形会话及 Vulkan 驱动；单独安装 <code>libvulkan1</code> 并不会安装 GPU 驱动。</p>
+  libssl-dev libzstd-dev libasound2-dev vulkan-validationlayers libvulkan1</code></pre>
+      <p>此清单与仓库的 <code>script/install-linux.sh</code> 一致，适用于 Ubuntu 24.04；其他发行版需要安装对应的开发包。<code>libasound2-dev</code>（ALSA）仅在启用 <code>speech</code> feature 时需要。显示窗口还需要可用的 Wayland 或 X11 图形会话及 Vulkan 驱动；单独安装 <code>libvulkan1</code> 并不会安装 GPU 驱动。</p>
     </section>
   </div>
 </div>
