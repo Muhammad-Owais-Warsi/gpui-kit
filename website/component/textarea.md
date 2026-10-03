@@ -108,6 +108,6 @@ Import `InputToken` from `gpui_kit::component::input` and `IconName` from
 `gpui_kit::component`. A token wraps onto the next line as a whole, and auto-grow adjusts the textarea
 height to fit. Put line breaks in the text between tokens. Use `on_token_hover`
 to show a tooltip or preview without selecting or editing; disabled tokens never
-report hover, matching click. See
+report hover entry; disabling a hovered token sends its exit. See
 [Input: atomic inline tokens](./input.md#atomic-inline-tokens) for editing,
 activation, draft persistence, mode restrictions and JavaScript APIs.

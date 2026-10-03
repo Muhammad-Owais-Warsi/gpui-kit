@@ -1449,19 +1449,32 @@ impl<M: InputModeKind> TextElement<M> {
         };
         let presentation = self.state.read(cx).token_presentation.clone();
         let child = presentation.render(token, window, cx);
-        // A token is addressed by where it starts: the same reference may occur
-        // more than once, and the document revision guards a press against
-        // edits that move it.
+        // Preserve interaction state only for the same token occurrence and
+        // hover eligibility. Replacements and re-enabling start fresh.
         let start = token.range().start;
         let down_state = self.state.clone();
         let click_state = self.state.clone();
         let move_state = self.state.clone();
         let hover_state = self.state.clone();
+        let hover_token = token.token().clone();
         let disabled = token.is_disabled();
+        let hover_enabled = presentation.has_hover_listener() && !disabled;
+        let id = gpui::ElementId::from(("inline-token", start));
+        let id = gpui::ElementId::from((id, token.token().id().clone()));
+        let id = gpui::ElementId::from((id, token.token().text().clone()));
+        let id = gpui::ElementId::from((id, token.token().label().clone()));
+        let id = gpui::ElementId::from((
+            id,
+            gpui::SharedString::from(if hover_enabled {
+                "hover-enabled"
+            } else {
+                "hover-disabled"
+            }),
+        ));
         let accessible = presentation.has_listener() && !disabled;
         let accessible_state = self.state.clone();
         gpui::div()
-            .id(("inline-token", start))
+            .id(id)
             .flex()
             .items_center()
             .h(token.line_height())
@@ -1579,8 +1592,14 @@ impl<M: InputModeKind> TextElement<M> {
                     // range-to-bounds guess: a token at a soft-wrap boundary
                     // would otherwise report a zero/negative width or a
                     // two-row height.
-                    let bounds = state.token_bounds.get(&start).copied()?;
-                    state.token_hover(start, bounds, hovered)
+                    let bounds = if hovered {
+                        state.token_bounds.get(&start).copied()?
+                    } else {
+                        // Exits use entry geometry even if an earlier callback
+                        // removed the token and its current bounds.
+                        Bounds::default()
+                    };
+                    state.token_hover(start, bounds, hovered, Some(&hover_token))
                 });
                 if let Some((listener, event)) = activation {
                     listener(&event, window, cx);
@@ -1609,24 +1628,30 @@ impl<M: InputModeKind> TextElement<M> {
         );
         if !state.tokens_visible() {
             if state.token_layout_cache.is_none() {
-                let exit = self.state.update(cx, |state, _| {
+                let mut exit = self.state.update(cx, |state, _| {
                     state.token_bounds.clear();
                     state.reconcile_token_hover()
                 });
-                if let Some((listener, event)) = exit {
+                while let Some((listener, event)) = exit {
                     listener(&event, window, cx);
+                    exit = self
+                        .state
+                        .update(cx, |state, _| state.reconcile_token_hover());
                 }
                 return Default::default();
             }
             self.state.update(cx, |state, cx| {
                 state.display_map.set_inline_metrics(Rc::from([]), cx)
             });
-            let exit = self.state.update(cx, |state, _| {
+            let mut exit = self.state.update(cx, |state, _| {
                 state.token_bounds.clear();
                 state.reconcile_token_hover()
             });
-            if let Some((listener, event)) = exit {
+            while let Some((listener, event)) = exit {
                 listener(&event, window, cx);
+                exit = self
+                    .state
+                    .update(cx, |state, _| state.reconcile_token_hover());
             }
             return Default::default();
         }
@@ -1882,12 +1907,15 @@ impl<M: InputModeKind> TextElement<M> {
     ) -> Vec<AnyElement> {
         let state = self.state.read(cx);
         if !state.tokens_visible() {
-            let exit = self.state.update(cx, |state, _| {
+            let mut exit = self.state.update(cx, |state, _| {
                 state.token_bounds.clear();
                 state.reconcile_token_hover()
             });
-            if let Some((listener, event)) = exit {
+            while let Some((listener, event)) = exit {
                 listener(&event, window, cx);
+                exit = self
+                    .state
+                    .update(cx, |state, _| state.reconcile_token_hover());
             }
             return vec![];
         }
@@ -1937,12 +1965,15 @@ impl<M: InputModeKind> TextElement<M> {
             token_bounds.insert(token.range().start, Bounds::new(origin, element_size));
             out.push(element);
         }
-        let exit = self.state.update(cx, |state, _| {
+        let mut exit = self.state.update(cx, |state, _| {
             state.token_bounds = token_bounds;
             state.reconcile_token_hover()
         });
-        if let Some((listener, event)) = exit {
+        while let Some((listener, event)) = exit {
             listener(&event, window, cx);
+            exit = self
+                .state
+                .update(cx, |state, _| state.reconcile_token_hover());
         }
         out
     }

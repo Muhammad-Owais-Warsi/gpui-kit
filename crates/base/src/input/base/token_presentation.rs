@@ -147,6 +147,9 @@ impl InlineTokenPresentation {
         self.hover_listener = Some(Rc::new(listener));
         self
     }
+    pub(super) fn has_hover_listener(&self) -> bool {
+        self.hover_listener.is_some()
+    }
     pub(super) fn has_listener(&self) -> bool {
         self.listener.is_some()
     }
@@ -255,7 +258,8 @@ impl<M: InputModeKind> InputBaseState<M> {
         ))
     }
     /// The token starting at `start`, paired with the hover listener.
-    /// Disabled tokens never report hover, matching click; readonly tokens do.
+    /// Disabled tokens never enter; existing hover still receives its exit.
+    /// Readonly tokens report hover.
     /// Records and clears the retained hover snapshot used for exit
     /// reconciliation. An exit only clears the snapshot when it belongs to the
     /// exiting token: GPUI dispatches a newly entered token before the exit of
@@ -266,62 +270,88 @@ impl<M: InputModeKind> InputBaseState<M> {
         start: usize,
         bounds: Bounds<Pixels>,
         hovered: bool,
+        expected_token: Option<&InlineToken>,
     ) -> Option<(InlineTokenHoverListener, InlineTokenHoverEvent)> {
-        if self.disabled || !self.tokens_visible() {
-            return None;
-        }
-        let span = self
-            .token_spans()
-            .iter()
-            .find(|span| span.range().start == start)?
-            .clone();
-        let range = span.range();
-        let range_utf16 = (
-            self.text.offset_to_offset_utf16(range.start),
-            self.text.offset_to_offset_utf16(range.end),
-        );
-        if hovered {
-            self.hovered_token = Some(HoverSnapshot {
-                span: span.clone(),
-                bounds,
-                range_utf16,
-            });
-        } else if self
-            .hovered_token
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.span.range().start == start)
-        {
-            self.hovered_token = None;
-        }
-        Some((
-            self.token_presentation.hover_listener.clone()?,
-            InlineTokenHoverEvent {
+        let listener = self.token_presentation.hover_listener.clone()?;
+        let matches = |snapshot: &HoverSnapshot| {
+            snapshot.span.range().start == start
+                && expected_token.is_none_or(|token| snapshot.span.token() == token)
+        };
+        let snapshot = if hovered {
+            if self.disabled || !self.tokens_visible() {
+                return None;
+            }
+            let span = self
+                .token_spans()
+                .iter()
+                .find(|span| {
+                    span.range().start == start
+                        && expected_token.is_none_or(|token| span.token() == token)
+                })?
+                .clone();
+            if self
+                .hovered_token
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.span == span)
+            {
+                return None;
+            }
+            let range = span.range();
+            let snapshot = HoverSnapshot {
                 span,
                 bounds,
+                range_utf16: (
+                    self.text.offset_to_offset_utf16(range.start),
+                    self.text.offset_to_offset_utf16(range.end),
+                ),
+            };
+            if let Some(previous) = self.hovered_token.replace(snapshot.clone()) {
+                self.pending_token_hover_exits.push(previous);
+            }
+            snapshot
+        } else if self.hovered_token.as_ref().is_some_and(matches) {
+            self.hovered_token.take()?
+        } else {
+            let index = self.pending_token_hover_exits.iter().position(matches)?;
+            self.pending_token_hover_exits.remove(index)
+        };
+        Some((
+            listener,
+            InlineTokenHoverEvent {
+                span: snapshot.span,
+                bounds: snapshot.bounds,
                 hovered,
-                range_utf16,
+                range_utf16: snapshot.range_utf16,
             },
         ))
     }
-    /// Emit the retained exit when the hovered token is no longer there:
-    /// removed or replaced programmatically (even at the same offset),
-    /// hidden or scrolled out of the laid-out rows, masked, or disabled.
-    /// The retained span is compared against the current token at that offset,
-    /// so a replacement keeps no stale hover for its predecessor. Hover exit
-    /// must degrade to "just leave" even when the token and its geometry are
-    /// gone, so the exit itself never looks the token up.
+    /// Deliver exits from entry snapshots, even after edits or callback reentry
+    /// remove the token. Keep predecessors until their mouse exit is dispatched.
     pub(super) fn reconcile_token_hover(
         &mut self,
     ) -> Option<(InlineTokenHoverListener, InlineTokenHoverEvent)> {
-        let snapshot = self.hovered_token.take()?;
-        let same_still_placed = !self.disabled
-            && self.tokens_visible()
-            && self.token_bounds.contains_key(&snapshot.span.range().start)
-            && self.token_spans().iter().any(|s| *s == snapshot.span);
-        if same_still_placed {
-            self.hovered_token = Some(snapshot);
+        let is_placed = |snapshot: &HoverSnapshot| {
+            !self.disabled
+                && self.tokens_visible()
+                && self.token_presentation.has_hover_listener()
+                && self.token_bounds.contains_key(&snapshot.span.range().start)
+                && self.token_spans().contains(&snapshot.span)
+        };
+        let snapshot = if let Some(index) = self
+            .pending_token_hover_exits
+            .iter()
+            .position(|snapshot| !is_placed(snapshot))
+        {
+            self.pending_token_hover_exits.remove(index)
+        } else if self
+            .hovered_token
+            .as_ref()
+            .is_some_and(|snapshot| !is_placed(snapshot))
+        {
+            self.hovered_token.take()?
+        } else {
             return None;
-        }
+        };
         Some((
             self.token_presentation.hover_listener.clone()?,
             InlineTokenHoverEvent {
