@@ -542,13 +542,13 @@ impl RenderOnce for Input {
                 Rc::new(|token, _, _| super::InputToken::new(token).into_any_element())
             })),
             self.token_click_listener,
-            self.token_hover_listener,
             matches!(
                 self.content_type,
                 Some(InputContentType::Password | InputContentType::NewPassword)
             ),
             cx,
         );
+        state.install_token_hover_presentation(self.token_hover_listener, cx);
         // Which kind of input this registers as follows from the state itself.
         sync_focused_input_registry(&state, window, cx);
 

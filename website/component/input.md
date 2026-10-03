@@ -428,9 +428,10 @@ Input::new(&input)
 ```
 
 The event carries the token, its byte `range()`, the measured `bounds()`, and
-`is_hovered()`. Disabled tokens never report hover, matching click; readonly
-tokens do. Keep hover and selection styles the same size so the row does not
-shift under the pointer.
+`is_hovered()`. Disabled tokens never report hover entry, matching click;
+readonly tokens do. Removing, replacing, or disabling a hovered token still
+sends its exit event so tooltips dismiss. Keep hover and selection styles the
+same size so the row does not shift under the pointer.
 
 If your token includes a button, consume its mouse-down and click events so that
 it does not also open the reference. Apply `token.is_disabled()` to every child

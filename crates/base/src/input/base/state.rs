@@ -362,10 +362,11 @@ pub struct InputBaseState<M: InputModeKind> {
     /// Real per-frame bounds of the placed token elements, keyed by token
     /// start offset; used for hover payloads and stale-hover reconciliation.
     pub(super) token_bounds: std::collections::HashMap<usize, Bounds<Pixels>>,
-    /// The currently hovered token and its last measured bounds. Retained so
-    /// hover exit can still be delivered when the token is removed, scrolled
-    /// out, or disabled.
-    pub(super) hovered_token: Option<(super::InlineTokenSpan, Bounds<Pixels>)>,
+    /// The currently hovered token: its entered span, last measured bounds,
+    /// and UTF-16 range as of entry. Retained so hover exit can still be
+    /// delivered when the token is removed, replaced, scrolled out, or
+    /// disabled.
+    pub(super) hovered_token: Option<super::token_presentation::HoverSnapshot>,
     /// The start offset of a pressed token, with the document revision and
     /// pointer position at the press.
     pub(super) pressed_token: Option<(usize, u64, Point<Pixels>)>,
@@ -4931,6 +4932,95 @@ mod tests {
                 "{ranged:?} vs {placed:?}"
             );
         }
+    }
+
+    #[gpui::test]
+    fn test_inline_token_hover_same_offset_replacement_exits_predecessor(cx: &mut TestAppContext) {
+        use crate::input::{InlineToken, InlineTokenPresentation};
+        use gpui::{Bounds, point, px, size};
+        cx.update(crate::init);
+        let view = InputView::build(cx, |state| state.default_value("@alice!"));
+        let bounds = Bounds::new(point(px(10.), px(20.)), size(px(100.), px(20.)));
+        view.window_handle
+            .update(cx, |_, window, cx| {
+                view.input.update(cx, |state, cx| {
+                    state
+                        .replace_range_with_token(0..6, InlineToken::new("a", "@alice"), window, cx)
+                        .unwrap();
+                    state.set_token_presentation(
+                        InlineTokenPresentation::default().on_token_hover(|_, _, _| {}),
+                    );
+                    // The pointer entered A and never moved.
+                    let (_, entered) = state.token_hover(0, bounds, true).expect("hover enters A");
+                    assert_eq!(entered.token().id().as_ref(), "a");
+                    // Replace A with B at the same offset under the stationary
+                    // pointer: no element exit fires, so only reconciliation
+                    // can end A's hover. The placed row still covers offset 0.
+                    state
+                        .replace_range_with_token(0..6, InlineToken::new("b", "@alice"), window, cx)
+                        .unwrap();
+                    state.token_bounds.insert(0, bounds);
+                    let (listener, exit) = state.reconcile_token_hover().expect("A must exit");
+                    assert!(!exit.is_hovered());
+                    assert_eq!(exit.token().id().as_ref(), "a");
+                    assert!(state.hovered_token.is_none());
+                    drop(listener);
+                    // B can now be entered fresh on the next pointer move.
+                    let (_, entered_b) =
+                        state.token_hover(0, bounds, true).expect("hover enters B");
+                    assert_eq!(entered_b.token().id().as_ref(), "b");
+                });
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn test_inline_token_hover_older_exit_keeps_newer_snapshot(cx: &mut TestAppContext) {
+        use crate::input::{InlineToken, InlineTokenPresentation};
+        use gpui::{Bounds, point, px, size};
+        cx.update(crate::init);
+        let view = InputView::build(cx, |state| state.default_value("@a @b"));
+        let bounds = Bounds::new(point(px(10.), px(20.)), size(px(100.), px(20.)));
+        view.window_handle
+            .update(cx, |_, window, cx| {
+                view.input.update(cx, |state, cx| {
+                    state
+                        .replace_range_with_token(0..2, InlineToken::new("a", "@a"), window, cx)
+                        .unwrap();
+                    state
+                        .replace_range_with_token(3..5, InlineToken::new("b", "@b"), window, cx)
+                        .unwrap();
+                    state.set_token_presentation(
+                        InlineTokenPresentation::default().on_token_hover(|_, _, _| {}),
+                    );
+                    // The pointer moves A -> B; GPUI dispatches B's enter
+                    // before A's exit.
+                    state.token_hover(0, bounds, true).expect("hover enters A");
+                    state.token_hover(3, bounds, true).expect("hover enters B");
+                    let (_, exit_a) = state.token_hover(0, bounds, false).expect("A exits");
+                    assert!(!exit_a.is_hovered());
+                    // B's snapshot must survive A's late exit.
+                    assert_eq!(
+                        state
+                            .hovered_token
+                            .as_ref()
+                            .expect("B still hovered")
+                            .span
+                            .token()
+                            .id()
+                            .as_ref(),
+                        "b"
+                    );
+                    // Removing B afterwards still produces B's reconciled exit.
+                    state.set_value("no tokens", window, cx);
+                    state.token_bounds.clear();
+                    let (listener, exit_b) = state.reconcile_token_hover().expect("B must exit");
+                    assert!(!exit_b.is_hovered());
+                    assert_eq!(exit_b.token().id().as_ref(), "b");
+                    drop(listener);
+                });
+            })
+            .unwrap();
     }
 
     #[gpui::test]

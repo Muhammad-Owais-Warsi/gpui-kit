@@ -367,7 +367,7 @@ Input::new(&input)
     });
 ```
 
-事件携带 token、字节 `range()`、测量得到的 `bounds()` 与 `is_hovered()`。禁用 token 从不上报悬停，与点击规则一致；只读 token 会上报。悬停与选中样式应保持尺寸一致，避免行在指针下抖动。
+事件携带 token、字节 `range()`、测量得到的 `bounds()` 与 `is_hovered()`。禁用 token 从不上报悬停进入，与点击规则一致；只读 token 会上报。删除、替换或禁用正在悬停的 token 时仍会发送其退出事件，提示应随之关闭。悬停与选中样式应保持尺寸一致，避免行在指针下抖动。
 
 如果 token 内含按钮，应消费按钮的 mouse-down 和 click 事件，避免同时打开引用。所有子操作（包括无障碍操作）都应遵守 `token.is_disabled()`；会修改内容的操作还应遵守 `token.is_readonly()`。
 

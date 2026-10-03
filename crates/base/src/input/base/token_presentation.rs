@@ -1,5 +1,5 @@
 //! Presentation callbacks and measured geometry. None of this enters document history.
-use super::{InlineToken, InlineTokenSpan, InputBaseState, InputModeKind};
+use super::{InlineToken, InlineTokenSpan, InputBaseState, InputModeKind, rope_ext::RopeExt as _};
 use gpui::{AnyElement, App, Bounds, ClickEvent, Font, IntoElement, Pixels, Window};
 use std::{collections::HashMap, ops::Range, rc::Rc};
 
@@ -69,6 +69,7 @@ pub struct InlineTokenHoverEvent {
     span: InlineTokenSpan,
     bounds: Bounds<Pixels>,
     hovered: bool,
+    range_utf16: (usize, usize),
 }
 impl InlineTokenHoverEvent {
     pub fn token(&self) -> &InlineToken {
@@ -84,6 +85,24 @@ impl InlineTokenHoverEvent {
     pub fn is_hovered(&self) -> bool {
         self.hovered
     }
+    /// The token range in UTF-16 code units, captured when the event was
+    /// built. Exits delivered after the text changed report these entry
+    /// coordinates, since the byte range can no longer be converted against
+    /// the current text.
+    pub fn range_utf16(&self) -> (usize, usize) {
+        self.range_utf16
+    }
+}
+
+/// The retained hover presence: the entered span, its placed bounds, and its
+/// UTF-16 range as of entry. JavaScript string offsets shift with later edits,
+/// so an exit delivered after a change cannot recompute them from the current
+/// text and reuses these instead.
+#[derive(Clone)]
+pub(super) struct HoverSnapshot {
+    pub(super) span: InlineTokenSpan,
+    pub(super) bounds: Bounds<Pixels>,
+    pub(super) range_utf16: (usize, usize),
 }
 
 /// A renderer installed by a styled control. Not part of the supported API.
@@ -162,23 +181,31 @@ impl<M: InputModeKind> InputBaseState<M> {
     pub(crate) fn set_token_presentation(&mut self, presentation: InlineTokenPresentation) {
         self.token_presentation = presentation;
     }
-    /// Install a styled control's renderer, click and hover listeners and
-    /// secrecy without editing or notifying the document. Not part of the
-    /// supported API.
+    /// Install a styled control's renderer, click listener and secrecy without
+    /// editing or notifying the document. Not part of the supported API.
     #[doc(hidden)]
     pub fn install_token_presentation(
         &mut self,
         renderer: Option<InlineTokenRenderer>,
         listener: Option<InlineTokenClickListener>,
-        hover_listener: Option<InlineTokenHoverListener>,
         secret: bool,
     ) {
         self.token_presentation = InlineTokenPresentation {
             renderer,
             listener,
-            hover_listener,
+            hover_listener: self.token_presentation.hover_listener.clone(),
             secret,
         };
+    }
+    /// Install a styled control's token hover listener without editing or
+    /// notifying the document. Kept separate so the original installer keeps
+    /// compiling for existing consumers. Not part of the supported API.
+    #[doc(hidden)]
+    pub fn install_token_hover_presentation(
+        &mut self,
+        hover_listener: Option<InlineTokenHoverListener>,
+    ) {
+        self.token_presentation.hover_listener = hover_listener;
     }
     pub(super) fn tokens_visible(&self) -> bool {
         !self.masked
@@ -230,7 +257,10 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// The token starting at `start`, paired with the hover listener.
     /// Disabled tokens never report hover, matching click; readonly tokens do.
     /// Records and clears the retained hover snapshot used for exit
-    /// reconciliation.
+    /// reconciliation. An exit only clears the snapshot when it belongs to the
+    /// exiting token: GPUI dispatches a newly entered token before the exit of
+    /// the token the pointer left, so an older exit must not drop the newer
+    /// token's snapshot.
     pub(super) fn token_hover(
         &mut self,
         start: usize,
@@ -245,9 +275,22 @@ impl<M: InputModeKind> InputBaseState<M> {
             .iter()
             .find(|span| span.range().start == start)?
             .clone();
+        let range = span.range();
+        let range_utf16 = (
+            self.text.offset_to_offset_utf16(range.start),
+            self.text.offset_to_offset_utf16(range.end),
+        );
         if hovered {
-            self.hovered_token = Some((span.clone(), bounds));
-        } else {
+            self.hovered_token = Some(HoverSnapshot {
+                span: span.clone(),
+                bounds,
+                range_utf16,
+            });
+        } else if self
+            .hovered_token
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.span.range().start == start)
+        {
             self.hovered_token = None;
         }
         Some((
@@ -256,30 +299,36 @@ impl<M: InputModeKind> InputBaseState<M> {
                 span,
                 bounds,
                 hovered,
+                range_utf16,
             },
         ))
     }
     /// Emit the retained exit when the hovered token is no longer there:
-    /// removed programmatically, hidden or scrolled out of the laid-out rows,
-    /// masked, or disabled. Hover exit must degrade to "just leave" even when
-    /// the token and its geometry are gone, so this never looks the token up.
+    /// removed or replaced programmatically (even at the same offset),
+    /// hidden or scrolled out of the laid-out rows, masked, or disabled.
+    /// The retained span is compared against the current token at that offset,
+    /// so a replacement keeps no stale hover for its predecessor. Hover exit
+    /// must degrade to "just leave" even when the token and its geometry are
+    /// gone, so the exit itself never looks the token up.
     pub(super) fn reconcile_token_hover(
         &mut self,
     ) -> Option<(InlineTokenHoverListener, InlineTokenHoverEvent)> {
-        let (span, bounds) = self.hovered_token.take()?;
-        let still_hoverable = !self.disabled
+        let snapshot = self.hovered_token.take()?;
+        let same_still_placed = !self.disabled
             && self.tokens_visible()
-            && self.token_bounds.contains_key(&span.range().start);
-        if still_hoverable {
-            self.hovered_token = Some((span, bounds));
+            && self.token_bounds.contains_key(&snapshot.span.range().start)
+            && self.token_spans().iter().any(|s| *s == snapshot.span);
+        if same_still_placed {
+            self.hovered_token = Some(snapshot);
             return None;
         }
         Some((
             self.token_presentation.hover_listener.clone()?,
             InlineTokenHoverEvent {
-                span,
-                bounds,
+                span: snapshot.span,
+                bounds: snapshot.bounds,
                 hovered: false,
+                range_utf16: snapshot.range_utf16,
             },
         ))
     }

@@ -189,12 +189,23 @@ pub fn inline_token_click_data(event: &InlineTokenClickEvent, text: &Rope) -> Da
     ])
 }
 
-/// Plain JS hover event, with current token identity and presence.
+/// Plain JS hover event, with current token identity and presence. Entry
+/// coordinates come from the current text; an exit delivered after the text
+/// changed reuses the UTF-16 coordinates captured at entry.
 pub fn inline_token_hover_data(event: &InlineTokenHoverEvent, text: &Rope) -> Data {
+    let range = if event.is_hovered() {
+        rope_range_data(text, event.range())
+    } else {
+        let (start, end) = event.range_utf16();
+        object([
+            ("start", Data::Number(start as f64)),
+            ("end", Data::Number(end as f64)),
+        ])
+    };
     let bounds = event.bounds();
     object([
         ("token", token_data(event.token())),
-        ("range", rope_range_data(text, event.range())),
+        ("range", range),
         ("hovered", Data::Boolean(event.is_hovered())),
         (
             "bounds",
